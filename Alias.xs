@@ -19,6 +19,13 @@ alias_r (src, dst)
     if (!SvROK(src) || !SvROK(dst))
       croak("destination and source must be references");
 
+    /* allow people to say alias(dst => src) instead */
+    if (SvIV(perl_get_sv("Lexical::Alias::SWAP", FALSE)) == 1) {
+      SV *tmp = src;
+      src = dst;
+      dst = tmp;
+    }
+
     dt = SvTYPE(SvRV(dst));
     st = SvTYPE(SvRV(src));
 

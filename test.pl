@@ -58,3 +58,11 @@ ok( $@ =~ /must be ref/i );
 
 ok( ! eval { alias_r($y, \$z); 1 } );
 ok( $@ =~ /must be ref/i );
+
+my $orig = 100;
+my $copy = 200;
+
+$Lexical::Alias::SWAP = 1;
+alias_r(\$copy, \$orig);
+ok($orig == $copy);
+ok($orig == 100);

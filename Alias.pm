@@ -6,7 +6,8 @@ require DynaLoader;
 @ISA = qw( Exporter DynaLoader );
 @EXPORT = qw( alias );
 @EXPORT_OK = qw( alias_r alias_s alias_a alias_h );
-$VERSION = '0.03';
+$VERSION = '0.04';
+$SWAP = 0;
 
 bootstrap Lexical::Alias $VERSION;
 
@@ -64,11 +65,23 @@ Lexical::Alias - makes a lexical an alias for another variable
   alias_r \@src, \@dst;
   alias_r \%src, \%dst;
 
+  # if you prefer the alias come first...
+  $Lexical::Alias::SWAP = 1;
+  alias $dst, $src;  # $dst is an alias for $src
+
 =head1 DESCRIPTION
 
 This module allows you to alias a lexical (declared with C<my>) variable to
 another variable (package or lexical).  You will receive a fatal error if you
 try aliasing a scalar to something that is not a scalar (etc.).
+
+=head2 Parameter Swaping (new!)
+
+Version 0.04 introduced the C<$Lexical::Alias::SWAP> variable.  When it is
+true, the arguments to the aliasing functions are expected in reverse order;
+that is, the alias comes I<first>, and the source variable second.
+
+(Thanks to Jenda from F<perlmonks.org> for requesting this.)
 
 =head2 Exported Functions
 
@@ -122,6 +135,29 @@ either lexical makes I<all three lexicals> point to the same data.
 
 This is not a bug.
 
+However, there I<does> appear to be a bug in Perl 5.8.0 (which has been
+fixed in the development version 5.9.0); when these functions are used in a
+subroutine, they appear to not work fully:
+
+  my $orig = 1;
+  my $alias = 99;
+  alias $orig => $alias;
+  print "$orig = $alias\n";
+
+  sub foo {
+    my $orig = 1;
+    my $alias = 99;
+    alias $orig => $alias;
+    print "foo(): $orig = $alias\n";
+  }
+
+  foo();
+
+The expected output is "1 = 1" and "foo(): 1 = 1".  It is not so.  The
+second output is "foo(): 1 = 99".  Jenda pointed this out to me, and I do not
+know where in the source the bug is, but it will be fixed for the next
+release of Perl (5.8.1).
+
 =head1 AUTHOR
 
 Jeff C<japhy> Pinyan, F<japhy@pobox.com>
@@ -135,3 +171,6 @@ F<http://www.pobox.com/~japhy/>
 F<Devel::LexAlias>, by Richard Clamp, from which I got (and modified) the
 code necessary for this module.  I've wanted this feature for some time, and
 Richard opened the door with this module.
+
+F<Variable::Alias>, by Brent Dax, which is a tie() interface to aliasing
+all sorts of variables.
