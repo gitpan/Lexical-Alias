@@ -2,7 +2,7 @@ NAME
     Lexical::Alias - makes a lexical an alias for another variable
 
 SYNOPSIS
-      require 5.008;
+      use 5.008;
       use Lexical::Alias;
 
       my ($src, $dst);
@@ -71,8 +71,8 @@ DESCRIPTION
         This is not exported by default.
 
   Caveats
-    Because one variable is an alias for the other, making either one an
-    alias for *another* variable makes them *both* aliases for it:
+    If you alias one lexical to another lexical, then making another alias
+    to either lexical makes *all three lexicals* point to the same data.
 
       use Lexical::Alias;
 

@@ -6,7 +6,7 @@ require DynaLoader;
 @ISA = qw( Exporter DynaLoader );
 @EXPORT = qw( alias );
 @EXPORT_OK = qw( alias_r alias_s alias_a alias_h );
-$VERSION = '0.02';
+$VERSION = '0.03';
 
 bootstrap Lexical::Alias $VERSION;
 
@@ -31,7 +31,7 @@ Lexical::Alias - makes a lexical an alias for another variable
 
 =head1 SYNOPSIS
 
-  require 5.008;
+  use 5.008;
   use Lexical::Alias;
 
   my ($src, $dst);
@@ -109,8 +109,8 @@ default.
 
 =head2 Caveats
 
-Because one variable is an alias for the other, making either one an alias
-for I<another> variable makes them I<both> aliases for it:
+If you alias one lexical to another lexical, then making another alias to
+either lexical makes I<all three lexicals> point to the same data.
 
   use Lexical::Alias;
 

@@ -6,8 +6,7 @@
 # change 'tests => 1' to 'tests => last_test_to_print';
 
 use Test;
-use Devel::Peek;
-BEGIN { plan tests => 16 };
+BEGIN { plan tests => 22 };
 use Lexical::Alias qw( alias_r );
 ok(1); # If we made it this far, we're ok.
 
