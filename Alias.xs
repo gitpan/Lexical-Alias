@@ -1,44 +1,279 @@
-#include "EXTERN.h"
-#include "perl.h"
-#include "XSUB.h"
+#define PERL_NO_GET_CONTEXT
+#include <EXTERN.h>
+#include <perl.h>
+#include <XSUB.h>
 
-/* this is borrowed/modified from Devel::LexAlias */
+#include "ppport.h"
+#include "ptr_table.h"
 
-MODULE = Lexical::Alias			PACKAGE = Lexical::Alias
+#ifndef SvPAD_TYPED
+#define SvPAD_TYPED(sv) (SvFLAGS(sv) & SVpad_TYPED)
+#endif
+
+#ifndef gv_stashpvs
+#define gv_stashpvs(s, add) Perl_gv_stashpvn(aTHX_ STR_WITH_LEN(s), add)
+#endif
+
+#define PACKAGE "Lexical::Alias"
+
+#define MY_CXT_KEY PACKAGE "::_guts" XS_VERSION
+typedef struct{
+	HV* alias_stash;
+
+	peep_t old_peepp;
+
+	PTR_TBL_t* seen;
+} my_cxt_t;
+START_MY_CXT
+
+
+static OP*
+la_pp_alias(pTHX){
+	dVAR; dSP;
+	dTOPss;                              /* right-hand side value */
+	PADOFFSET const po = PL_op->op_targ; /* left-hand side variable (padoffset) */
+
+	if(SvTEMP(sv)){
+		SAVEGENERICSV(PAD_SVl(po));
+
+		SvREFCNT_inc_simple_void_NN(sv);
+	}
+	else{
+		SAVESPTR(PAD_SVl(po));
+	}
+
+	PAD_SVl(po) = sv;
+
+	SETs(sv);
+	RETURN;
+}
+
+static int
+la_check_alias_assign(pTHX_ pMY_CXT_ const OP* const o){
+	dVAR;
+	OP* const kid = cBINOPo->op_last;
+
+	assert(o->op_flags & OPf_KIDS);
+
+	if(!(o->op_private & OPpASSIGN_BACKWARDS) /* not orassign, andassign nor dorassign */
+		&& kid
+		&& kid->op_type == OP_PADSV
+		&& kid->op_private & OPpLVAL_INTRO
+		&& o->op_targ == 0 /* it will be nil, but other similar mecanism can set non-zero */
+	){
+
+		SV* const padname = AvARRAY(PL_comppad_name)[kid->op_targ];
+
+		assert(AvMAX(PL_comppad_name) >= (I32)kid->op_targ);
+
+		if(SvPAD_TYPED(padname)
+			&& SvSTASH(padname) == MY_CXT.alias_stash){ /* my alias $foo = ... */
+
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+static void
+la_die(pTHX_ pMY_CXT_ COP* const cop, SV* const padname, const char* const msg){
+	dVAR;
+
+	ENTER;
+	SAVEVPTR(PL_curcop);
+	PL_curcop = cop;
+
+	ptr_table_free(MY_CXT.seen);
+	MY_CXT.seen = NULL;
+
+	Perl_croak(aTHX_ "Cannot declare my alias %s %s", SvPVX_const(padname), msg);
+	LEAVE; /* not reached */
+}
+
+static void
+la_inject(pTHX_ pMY_CXT_ COP* cop, OP* o){
+	dVAR;
+	COP* const oldcop = cop;
+
+	assert(MY_CXT.seen != NULL);
+
+	for(; o; o = o->op_next){
+		if(ptr_table_fetch(MY_CXT.seen, o)){
+			break;
+		}
+		ptr_table_store(MY_CXT.seen, o, (void*)TRUE);
+
+		switch(o->op_type){
+		case OP_SASSIGN:
+		if(la_check_alias_assign(aTHX_ aMY_CXT_ o)){
+			OP* const rhs = cBINOPo->op_first;
+			OP* const lhs = cBINOPo->op_last;
+
+			/* move the target sv (reference to my variable) */
+			o->op_targ   = lhs->op_targ;
+			lhs->op_targ = 0;
+
+			o->op_type   = OP_CUSTOM;
+			o->op_ppaddr = la_pp_alias;
+
+			op_null(lhs);
+
+			/* The right-hand side OP can be lvalue */
+			rhs->op_flags |= OPf_MOD;
+
+			if(rhs->op_type == OP_AELEM || rhs->op_type == OP_HELEM){
+				rhs->op_private |= OPpLVAL_DEFER;
+			}
+
+			break;
+		}
+		case OP_PADSV:{
+			SV* const padname = AvARRAY(PL_comppad_name)[o->op_targ];
+
+			if(SvPAD_TYPED(padname) && SvSTASH(padname) == MY_CXT.alias_stash && o->op_private & OPpLVAL_INTRO){
+				if(o->op_private & OPpDEREF){
+					la_die(aTHX_ aMY_CXT_ cop, padname, "with dereference");
+					return;
+				}
+				else if(o->op_next->op_type != OP_SASSIGN){
+					return la_die(aTHX_ aMY_CXT_ cop, padname, "without assignment");
+					return;
+				}
+			}
+			break;
+		}
+
+		/* we concerned with only OP_SASSIGN and OP_PADSV, but should check all the opcode tree */
+		case OP_NEXTSTATE:
+		case OP_DBSTATE:
+			cop = ((COP*)o); /* for context info */
+			break;
+
+		case OP_MAPWHILE:
+		case OP_GREPWHILE:
+		case OP_AND:
+		case OP_OR:
+#ifdef pp_dor
+		case OP_DOR:
+#endif
+		case OP_ANDASSIGN:
+		case OP_ORASSIGN:
+#ifdef pp_dorassign
+		case OP_DORASSIGN:
+#endif
+		case OP_COND_EXPR:
+		case OP_RANGE:
+#ifdef pp_once
+		case OP_ONCE:
+#endif
+			la_inject(aTHX_ aMY_CXT_ cop, cLOGOPo->op_other);
+			break;
+		case OP_ENTERLOOP:
+		case OP_ENTERITER:
+			la_inject(aTHX_ aMY_CXT_ cop, cLOOPo->op_redoop);
+			la_inject(aTHX_ aMY_CXT_ cop, cLOOPo->op_nextop);
+			la_inject(aTHX_ aMY_CXT_ cop, cLOOPo->op_lastop);
+			break;
+		case OP_SUBST:
+#if PERL_BCDVERSION >= 0x5010000
+			la_inject(aTHX_ aMY_CXT_ cop, cPMOPo->op_pmstashstartu.op_pmreplstart);
+#else
+			la_inject(aTHX_ aMY_CXT_ cop, cPMOPo->op_pmreplstart);
+#endif
+			break;
+
+		default:
+			NOOP;
+		}
+	}
+
+	cop = oldcop;
+}
+
+static int
+la_enabled(pTHX){
+	dVAR;
+	SV** svp = AvARRAY(PL_comppad_name);
+	SV** end = svp + AvFILLp(PL_comppad_name) + 1;
+
+	while(svp != end){
+		if(SvPAD_TYPED(*svp)){
+			return TRUE;
+		}
+
+		svp++;
+	}
+
+	return FALSE;
+}
+
+static void
+la_peep(pTHX_ OP* const o){
+	dVAR;
+	dMY_CXT;
+
+	assert(o);
+
+	if(la_enabled(aTHX)){
+		assert(MY_CXT.seen == NULL);
+		MY_CXT.seen = ptr_table_new();
+
+		la_inject(aTHX_ aMY_CXT_ PL_curcop, o);
+
+		ptr_table_free(MY_CXT.seen);
+		MY_CXT.seen = NULL;
+	}
+
+	MY_CXT.old_peepp(aTHX_ o);
+}
+
+
+static void
+la_setup_opnames(pTHX){
+	dVAR;
+	SV* const keysv = newSViv(PTR2IV(la_pp_alias));
+
+	if(!PL_custom_op_names){
+		PL_custom_op_names = newHV();
+	}
+	if(!PL_custom_op_descs){
+		PL_custom_op_descs = newHV();
+	}
+
+	hv_store_ent(PL_custom_op_names, keysv, newSVpvs("alias"),         0U);
+	hv_store_ent(PL_custom_op_descs, keysv, newSVpvs("lexical alias"), 0U);
+
+	SvREFCNT_dec(keysv);
+}
+
+
+MODULE = Lexical::Alias	PACKAGE = Lexical::Alias
+
+PROTOTYPES: DISABLE
+
+BOOT:
+{
+	MY_CXT_INIT;
+
+	MY_CXT.alias_stash   = gv_stashpvs("alias", GV_ADD);
+
+	MY_CXT.old_peepp     = PL_peepp;
+	PL_peepp             = la_peep;
+
+	la_setup_opnames(aTHX);
+}
+
+
+#ifdef USE_ITHREADS
 
 void
-alias_r (src, dst)
-	SV *src
-	SV *dst
-  CODE:
-  {
-    AV* padv = PL_comppad;
-    int dt, st;
-    I32 i;
+CLONE(...)
+CODE:
+{
+	MY_CXT_CLONE;
+	MY_CXT.alias_stash = gv_stashpvs("alias", GV_ADD);
+	PERL_UNUSED_VAR(items);
+}
 
-    if (!SvROK(src) || !SvROK(dst))
-      croak("destination and source must be references");
-
-    /* allow people to say alias(dst => src) instead */
-    if (SvIV(perl_get_sv("Lexical::Alias::SWAP", FALSE)) == 1) {
-      SV *tmp = src;
-      src = dst;
-      dst = tmp;
-    }
-
-    dt = SvTYPE(SvRV(dst));
-    st = SvTYPE(SvRV(src));
-
-    if (!(dt < SVt_PVAV && st < SVt_PVAV || dt == st && dt <= SVt_PVHV))
-      croak("destination and source must be same type (%d != %d)",dt,st);
-
-    for (i = 0; i <= av_len(padv); ++i) {
-      SV** myvar_ptr = av_fetch(padv, i, 0);
-      if (myvar_ptr) {
-        if (SvRV(dst) == *myvar_ptr) {
-          av_store(padv, i, SvRV(src));
-          SvREFCNT_inc(SvRV(src));
-        }
-      }
-    }
-  }
+#endif
